@@ -197,16 +197,15 @@ class Graph:
         optimized_chi_sqr = graph_opt_utils.sum_optimizer_edges_chi2(self.optimized_graph, verbose=False)
 
         if verbose:
-            print("unoptimized edges' chi2 sum:         " + \
-                  str(graph_opt_utils.sum_optimizer_edges_chi2(self.unoptimized_graph, verbose=False)))
+            print(f"unoptimized edges' chi2 sum:         {optimized_chi_sqr}")
 
-            print("unoptimized gravity edges' chi2 sum: " + \
+            print("unoptimized gravity edges' chi2 sum: " +
                   str(graph_opt_utils.sum_optimizer_edges_chi2(self.unoptimized_graph, verbose=False,
                                                                edge_type_filter={EdgeSE3Gravity})))
-            print("optimized edges' chi2 sum:           " + \
+            print("  optimized edges' chi2 sum:         " +
                   str(graph_opt_utils.sum_optimizer_edges_chi2(self.optimized_graph, verbose=False)))
 
-            print("optimized gravity edges' chi2 sum:   " + \
+            print("  optimized gravity edges' chi2 sum: " +
                   str(graph_opt_utils.sum_optimizer_edges_chi2(self.optimized_graph, verbose=False,
                                                                edge_type_filter={EdgeSE3Gravity})))
         return optimized_chi_sqr
@@ -400,7 +399,7 @@ class Graph:
                     prescaling_matrix = np.diag(prescaling_matrix)
                 self.edges[uid].information = np.matmul(prescaling_matrix, edge.information)
 
-    def update_vertices_estimates(self) -> None:
+    def update_vertices_estimates_from_optimized_graph(self) -> None:
         """Update the vertices' estimate attributes with the optimized graph values' estimates.
         """
         for uid in self.optimized_graph.vertices():
@@ -430,7 +429,7 @@ class Graph:
                     membership.append(i)
 
             new_group = set.union(uids, *[groups[i][0] for i in membership]), \
-                set.union({uid}, *[groups[i][1] for i in membership])
+                        set.union({uid}, *[groups[i][1] for i in membership])
             membership.reverse()
             for i in membership:
                 del groups[i]
@@ -841,7 +840,7 @@ class Graph:
                     # adjust the x-coordinates of the detections to account for differences in coordinate systems
                     # induced by the FLIP_Y_AND_Z_AXES
                     tag_corners[tag_index][::2] = 2 * camera_intrinsics_for_tag[tag_index][2] - \
-                        tag_corners[tag_index][::2]
+                                                  tag_corners[tag_index][::2]
 
                     # Archive:
                     # for k, point in enumerate(true_3d_tag_points):

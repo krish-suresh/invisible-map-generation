@@ -15,7 +15,7 @@ import map_processing
 from map_processing import PrescalingOptEnum, VertexType
 from . import graph_opt_utils, graph_opt_plot_utils
 from .cache_manager import CacheManagerSingleton, MapInfo
-from .data_models import OComputeInfParams, Weights, OConfig, OG2oOptimizer
+from .data_models import OComputeInfParams, Weights, OConfig, OG2oOptimizer, GTDataSet
 from .graph import Graph
 
 
@@ -102,7 +102,7 @@ class GraphManager:
 
     def process_map(self, map_info: MapInfo, visualize: bool = True, upload: bool = False,
                     fixed_vertices: Union[VertexType, Tuple[VertexType]] = (), obs_chi2_filter: float = -1,
-                    compute_inf_params: Optional[OComputeInfParams] = None) \
+                    compute_inf_params: Optional[OComputeInfParams] = None, gt_data: Optional[GTDataSet] = None) \
             -> Tuple[float, OG2oOptimizer, OG2oOptimizer]:
         """Invokes optimization and plotting routines for any cached graphs matching the specified pattern.
 
@@ -116,6 +116,7 @@ class GraphManager:
             obs_chi2_filter: Parameter to pass to the optimize_graph method (see more there)
             compute_inf_params: Passed down to the `Edge.compute_information` method to specify the edge
              information computation parameters.
+            gt_data: If provided, only used in the downstream optimization visualization.
 
         Returns:
             The output of the `GraphManager.optimize_map` method (see more detail there).
@@ -133,8 +134,8 @@ class GraphManager:
             graph_plot_title=graph_plot_title, chi2_plot_title=chi2_plot_title, compute_inf_params=compute_inf_params,
             scale_by_edge_amount=self.scale_by_edge_amount)
         opt_chi2, opt_result, before_opt = GraphManager.optimize_graph(
-            graph=graph, visualize=visualize, optimization_config=optimization_config)
-        processed_map_json = map_processing.graph_opt_utils.make_processed_map_JSON(opt_result)
+            graph=graph, visualize=visualize, optimization_config=optimization_config, gt_data=gt_data)
+        processed_map_json = map_processing.graph_opt_utils.make_processed_map_json(opt_result)
 
         print("Processed map: {}".format(map_info.map_name))
         if upload:
@@ -251,7 +252,7 @@ class GraphManager:
             )
             g1sg_chi_sqr, g1sg_opt_result, _ = GraphManager.optimize_graph(
                 graph=g1sg, optimization_config=optimization_config_1, visualize=visualize)
-            processed_map_json_1 = map_processing.graph_opt_utils.make_processed_map_JSON(g1sg_opt_result)
+            processed_map_json_1 = map_processing.graph_opt_utils.make_processed_map_json(g1sg_opt_result)
 
             self._cms.cache_map(self._cms.PROCESSED_UPLOAD_TO, map_info,
                                 processed_map_json_1, "-comparison-subgraph-1-with_weights-set{}".format(iter_weights))
@@ -277,7 +278,7 @@ class GraphManager:
                 scale_by_edge_amount=self.scale_by_edge_amount)
             g2sg_chi_sqr, g2sg_opt_result, _ = GraphManager.optimize_graph(
                 graph=g2sg, visualize=visualize, optimization_config=optimization_config_2)
-            processed_map_json_2 = map_processing.graph_opt_utils.make_processed_map_JSON(g2sg_opt_result)
+            processed_map_json_2 = map_processing.graph_opt_utils.make_processed_map_json(g2sg_opt_result)
 
             self._cms.cache_map(
                 self._cms.PROCESSED_UPLOAD_TO, map_info, processed_map_json_2,
@@ -447,8 +448,8 @@ class GraphManager:
         return g1sg, g2sg
 
     @staticmethod
-    def optimize_graph(graph: Graph, optimization_config: OConfig, visualize: bool = False) -> \
-            Tuple[float, OG2oOptimizer, OG2oOptimizer]:
+    def optimize_graph(graph: Graph, optimization_config: OConfig, visualize: bool = False,
+                       gt_data: Optional[GTDataSet] = None) -> Tuple[float, OG2oOptimizer, OG2oOptimizer]:
         """Optimizes the input graph.
 
         Notes:
@@ -461,10 +462,10 @@ class GraphManager:
             4. [optional] Plot the optimization results
 
         Args:
-
             graph: A Graph instance to optimize.
             visualize: A boolean for whether the `visualize` static method of this class is called.
             optimization_config: Configures the optimization.
+            gt_data: If provided, only used for the downstream optimization visualization.
 
         Returns:
             A tuple containing in the following order: (1) The total chi2 value of the optimized graph as returned by
@@ -477,7 +478,9 @@ class GraphManager:
         graph.set_weights(weights=optimization_config.weights,
                           scale_by_edge_amount=optimization_config.scale_by_edge_amount)
         graph.update_edge_information(compute_inf_params=optimization_config.compute_inf_params)
+
         graph.generate_unoptimized_graph()
+        before_opt = map_processing.graph_opt_utils.optimizer_to_map_chi2(graph, graph.unoptimized_graph, is_sba=is_sba)
 
         opt_chi2 = graph.optimize_graph()
         if optimization_config.obs_chi2_filter > 0:
@@ -485,29 +488,23 @@ class GraphManager:
             graph.optimize_graph()
 
         # Change vertex estimates based off the optimized graph
-        graph.update_vertices_estimates()
-        prior_map = map_processing.graph_opt_utils.optimizer_to_map_chi2(graph, graph.unoptimized_graph, is_sba=is_sba)
-        resulting_map = map_processing.graph_opt_utils.optimizer_to_map_chi2(graph, graph.optimized_graph,
-                                                                             is_sba=is_sba)
+        graph.update_vertices_estimates_from_optimized_graph()
+        opt_result = map_processing.graph_opt_utils.optimizer_to_map_chi2(graph, graph.optimized_graph,
+                                                                          is_sba=is_sba)
 
         if visualize:
-            locations = resulting_map.locations
-            tag_verts = resulting_map.tags
-            waypoint_verts = (resulting_map.waypoints_metadata, resulting_map.waypoints_arr)
-            tagpoint_positions = resulting_map.tagpoints
             graph_opt_plot_utils.plot_optimization_result(
-                locations=locations,
-                prior_locations=prior_map.locations,
-                tag_verts=tag_verts,
-                tagpoint_positions=tagpoint_positions,
-                waypoint_verts=waypoint_verts,
-                original_tag_verts=prior_map.tags,
-                ground_truth_tags=None,
+                opt_odometry=opt_result.locations,
+                orig_odometry=before_opt.locations,
+                opt_tag_verts=opt_result.tags,
+                opt_tag_corners=opt_result.tagpoints,
+                opt_waypoint_verts=(opt_result.waypoints_metadata, opt_result.waypoints_arr),
+                orig_tag_verts=before_opt.tags,
+                ground_truth_tags=gt_data.sorted_poses_as_se3quat_list if gt_data is not None else None,
                 plot_title=optimization_config.graph_plot_title,
-                is_sba=is_sba
             )
-            graph_opt_plot_utils.plot_adj_chi2(resulting_map, optimization_config.chi2_plot_title)
-        return opt_chi2, resulting_map, prior_map
+            graph_opt_plot_utils.plot_adj_chi2(opt_result, optimization_config.chi2_plot_title)
+        return opt_chi2, opt_result, before_opt
 
     # -- Instance Methods: wrappers on top of core functionality --
 
@@ -655,7 +652,7 @@ class GraphManager:
         tag_id_intersection = set(optimized_tags.keys()).intersection(set(ground_truth_tags.keys()))
         optimized_tags_poses_intersection = np.zeros((len(tag_id_intersection), 7))
         gt_tags_poses_intersection = np.zeros((len(tag_id_intersection), 7))
-        for i, tag_id in enumerate(tag_id_intersection):
+        for i, tag_id in enumerate(sorted(tag_id_intersection)):
             optimized_vertex_estimate = optimized_tags[tag_id]
             optimized_tags_poses_intersection[i] = optimized_vertex_estimate
             gt_tags_poses_intersection[i] = ground_truth_tags[tag_id]

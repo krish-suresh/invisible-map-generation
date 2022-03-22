@@ -11,18 +11,16 @@ from typing import Callable, Tuple, Optional, List, Dict, Union
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-from g2o import SE3Quat
 from mpl_toolkits.mplot3d import Axes3D
 import cv2.cv2 as cv2
+from copy import deepcopy
 
 from map_processing.cache_manager import CacheManagerSingleton, MapInfo
-from map_processing.data_models import UGDataSet, UGTagDatum, UGPoseDatum, GTDataSet, GTTagPose
-from map_processing.transform_utils import norm_array_cols, FLIP_Y_AND_Z_AXES, AR_TO_OPENCV, transform_matrix_to_vector, \
-    transform_vector_to_matrix
+from map_processing.data_models import UGDataSet, UGTagDatum, UGPoseDatum, GTDataSet
+from map_processing.transform_utils import norm_array_cols, NEGATE_Y_AND_Z_AXES, AR_TO_OPENCV
+from map_processing.graph_opt_plot_utils import draw_frames
 
 matplotlib.rcParams['figure.dpi'] = 500
-
-SQRT_2_OVER_2 = np.sqrt(2) / 2
 
 
 class GraphGenerator:
@@ -75,53 +73,6 @@ class GraphGenerator:
                        GraphGenerator.OdomNoiseDims.RVert]
             return ordered
 
-    # noinspection GrazieInspection
-    TAG_DATASETS: Dict[str, Dict[int, np.ndarray]] = {
-        "3line": {
-            0: np.array([
-                [1, 0, 0, -3],
-                [0, 1, 0, 0],
-                [0, 0, 1, -4],
-                [0, 0, 0, 1]
-            ]),
-            1: np.array([
-                [1, 0, 0, 0],
-                [0, 1, 0, 0],
-                [0, 0, 1, -4],
-                [0, 0, 0, 1]
-            ]),
-            2: np.array([
-                [1, 0, 0, 3],
-                [0, 1, 0, 0],
-                [0, 0, 1, -4],
-                [0, 0, 0, 1]
-            ])
-        },
-        "occam": {
-            # The ground truth tags for the 6-17-21 OCCAM Room. Keyed by tag ID. Measurements in meters (measurements
-            # were taken in inches and converted to meters by multiplying by 0.0254). Measurements are in a right-handed
-            # coordinate system with its origin at the floor beneath tag id=0 (+Z pointing out of the wall and +X
-            # pointing to the right).
-            0: transform_vector_to_matrix(SE3Quat([0, 63.25 * 0.0254, 0, 0, 0, 0, 1]).to_vector()),
-            1: transform_vector_to_matrix(
-                SE3Quat([269 * 0.0254, 48.5 * 0.0254, -31.25 * 0.0254, 0, 0, 0, 1]).to_vector()),
-            2: transform_vector_to_matrix(
-                SE3Quat([350 * 0.0254, 58.25 * 0.0254, 86.25 * 0.0254, 0, SQRT_2_OVER_2, 0,
-                         -SQRT_2_OVER_2]).to_vector()),
-            3: transform_vector_to_matrix(
-                SE3Quat([345.5 * 0.0254, 58 * 0.0254, 357.75 * 0.0254, 0, 1, 0, 0]).to_vector()),
-            4: transform_vector_to_matrix(
-                SE3Quat([240 * 0.0254, 86 * 0.0254, 393 * 0.0254, 0, 1, 0, 0]).to_vector()),
-            5: transform_vector_to_matrix(
-                SE3Quat([104 * 0.0254, 31.75 * 0.0254, 393 * 0.0254, 0, 1, 0, 0]).to_vector()),
-            6: transform_vector_to_matrix(
-                SE3Quat([-76.75 * 0.0254, 56.5 * 0.0254, 316.75 * 0.0254, 0, SQRT_2_OVER_2, 0,
-                         SQRT_2_OVER_2]).to_vector()),
-            7: transform_vector_to_matrix(SE3Quat([-76.75 * 0.0254, 54 * 0.0254, 75 * 0.0254, 0, SQRT_2_OVER_2, 0,
-                                                   SQRT_2_OVER_2]).to_vector()),
-        }
-    }
-
     CAMERA_INTRINSICS_VEC = [
         1458.0604248046875,  # fx (camera focal length in the x-axis)
         1458.0604248046875,  # fy (camera focal length in the y-axis)
@@ -157,11 +108,7 @@ class GraphGenerator:
         [0, 0, 0, 1]
     ])
 
-    PATH_LINEAR_DELTA_T = 0.0001  # Time span over which the path can be assumed to be approximately linear
-    X_HAT_1X3 = np.array(((1, 0, 0),))
-    Y_HAT_1X3 = np.array(((0, 1, 0),))
-    Z_HAT_1X3 = np.array(((0, 0, 1),))
-    BASES_COLOR_CODES = ("r", "g", "b")
+    PATH_LINEAR_DELTA_T = 0.0001  # Time span over which a parameterized path can be assumed to be approximately linear
 
     def __init__(self,
                  path_from: Union[Callable[[np.ndarray, Dict[str, float]], np.ndarray], UGDataSet], dataset_name: str,
@@ -225,10 +172,11 @@ class GraphGenerator:
                 self._tag_poses = {}
             else:
                 self._tag_poses = self._path.approx_tag_in_global_by_id
+        self._tag_poses_orig = deepcopy(self._tag_poses)
 
-        self._tag_poses_arr = np.zeros((len(self._tag_poses), 4, 4))
+        self._orig_tag_poses_arr = np.zeros((len(self._tag_poses), 4, 4))
         for i, pose in enumerate(self._tag_poses.values()):
-            self._tag_poses_arr[i, :, :] = pose
+            self._orig_tag_poses_arr[i, :, :] = pose
 
         self._odometry_poses: Optional[np.ndarray] = None
         if self._path_type is GraphGenerator.PathType.PARAMETERIZED:
@@ -255,7 +203,7 @@ class GraphGenerator:
                 GraphGenerator.OdomNoiseDims.Z: 0,
                 GraphGenerator.OdomNoiseDims.RVert: 0,
             }
-        self._obs_noise_var = obs_noise_var
+        self._obs_noise_var: float = obs_noise_var if obs_noise_var is not None else 0
 
         self.generate()
 
@@ -297,31 +245,13 @@ class GraphGenerator:
                         camera_intrinsics=list(np.array(GraphGenerator.CAMERA_INTRINSICS_VEC)),
                         # Intentionally skipping position and orientation variance
                         timestamp=self._odometry_t_vec[pose_idx],
-                        tag_pose=list(np.matmul(FLIP_Y_AND_Z_AXES,
+                        # Note for the tag pose: the tag coordinate system in optimization expects the y and z axes to
+                        # be the negative of what we used here
+                        tag_pose=list(np.matmul(NEGATE_Y_AND_Z_AXES,
                                                 self._observation_poses[pose_idx][tag_id]).flatten(order="C")),
                         # Intentionally skipping joint covariance
                     )
                 )
-
-        # Construct data for the GTDataSet initialization: arbitrarily select a tag to use as the origin of the
-        # coordinate system in which the rest of the tags are represented.
-        ground_truth_tags = []
-        origin_key: int = 0
-        for key in self._tag_poses.keys():
-            origin_key = key
-            break
-        if len(self._tag_poses) != 0:
-            origin_inv = np.linalg.inv(self._tag_poses[origin_key])
-        for item in self._tag_poses.items():
-            # This point will only be reached if there are a nonzero number of tag poses (so origin_inv is guaranteed to
-            # be defined
-            # noinspection PyUnboundLocalVariable
-            ground_truth_tags.append(
-                GTTagPose(
-                    tag_id=item[0],
-                    pose=list(transform_matrix_to_vector(np.matmul(origin_inv, item[1])))
-                )
-            )
 
         return UGDataSet(
             # Intentionally skipping location data
@@ -329,9 +259,7 @@ class GraphGenerator:
             # Intentionally skipping plane data
             pose_data=pose_data,
             tag_data=tag_data
-        ), GTDataSet(
-            poses=ground_truth_tags
-        )
+        ), GTDataSet.gt_data_set_from_dict_of_arrays(self._tag_poses_orig)
 
     def export_to_map_processing_cache(self) -> None:
         """Serializes the graph into a json file and saves it to the target destination as set by the TODO
@@ -360,7 +288,7 @@ class GraphGenerator:
         """Visualizes the generated graph by plotting the path, the poses on the path, the tags, and the observations of
          those tags.
 
-         TODO: add plot legend.
+        TODO: add plot legend.
 
         Args:
             plus_minus_lim: Value for the x-, y-, and z-lim3d parameters of the matplotlib 3d axes.
@@ -377,9 +305,9 @@ class GraphGenerator:
         ax.axes.set_zlim3d(bottom=-plus_minus_lim, top=plus_minus_lim)
 
         plt.plot(path_samples[0, :], path_samples[1, :], path_samples[2, :])
-        GraphGenerator.draw_frames((self._odometry_poses[:, :3, 3]).transpose(), self._odometry_poses[:, :3, :3], ax)
-        GraphGenerator.draw_frames((self._tag_poses_arr[:, :3, 3]).transpose(), self._tag_poses_arr[:, :3, :3], ax,
-                                   colors=("m", "m", "m"))
+        draw_frames((self._odometry_poses[:, :3, 3]).transpose(), self._odometry_poses[:, :3, :3], ax)
+        draw_frames((self._orig_tag_poses_arr[:, :3, 3]).transpose(),
+                    self._orig_tag_poses_arr[:, :3, :3], ax, colors=("m", "m", "m"))
 
         # Get observation vectors in the global frame and plot them
         for i, dct in enumerate(self._observation_poses):
@@ -536,7 +464,7 @@ class GraphGenerator:
         """
         # Flip the y and z because the math for the camera intrinsics assumes that +z is increasing depth from the
         # camera (and the AR kit has +z facing out of the screen).
-        flipped_tag_in_phone = np.matmul(FLIP_Y_AND_Z_AXES, tag_in_phone)
+        flipped_tag_in_phone = np.matmul(NEGATE_Y_AND_Z_AXES, tag_in_phone)
         tag_corners_in_flipped_phone = np.matmul(flipped_tag_in_phone, self._tag_corners_in_tag)
 
         # 3xN array of N points' pixel coordinates (accurate only after subsequent normalization)
@@ -618,35 +546,6 @@ class GraphGenerator:
     PARAMETERIZED_PATH_ALIAS_TO_CALLABLE: Dict[str, Callable[[np.ndarray, Dict[str, float]], np.ndarray]] = {
         "e": xz_path_ellipsis_four_by_two.__func__
     }
-
-    @staticmethod
-    def draw_frames(offsets: np.ndarray, frames: np.ndarray, plt_axes: plt.Axes,
-                    colors: Tuple[str, str, str] = ("r", "g", "b")) -> None:
-        """Draw N reference frames at given translation offsets.
-
-        Args:
-            offsets: Translation offsets of the frames. Expected to be a 3xN matrix where the rows from top to bottom
-             encode the translation offset in the first, second, and third dimensions, respectively.
-            frames: Nx3x3 array of rotation matrices.
-            plt_axes: Matplotlib axes to plot on
-            colors: Tuple of color codes to use for the first, second, and third dimensions' basis vector arrows,
-             respectively.
-        """
-        for b in range(3):
-            basis_vectors_transposed = (frames[:, :, b]).transpose()
-            plt_axes.quiver(
-                offsets[0, :],
-                offsets[1, :],
-                offsets[2, :],
-                # For each basis vector, dot it with the corresponding basis vector of the reference frame it is within
-                np.matmul(GraphGenerator.X_HAT_1X3, basis_vectors_transposed),
-                np.matmul(GraphGenerator.Y_HAT_1X3, basis_vectors_transposed),
-                np.matmul(GraphGenerator.Z_HAT_1X3, basis_vectors_transposed),
-                length=0.5,
-                arrow_length_ratio=0.3,
-                normalize=True,
-                color=colors[b],
-            )
 
     @staticmethod
     def frenet_frames(t_vec: np.ndarray,

@@ -3,7 +3,7 @@ Utility functions for graph optimization.
 """
 
 import math
-from typing import Union, List, Optional, Set
+from typing import Union, List, Optional, Set, Type
 
 import g2o
 import numpy as np
@@ -185,7 +185,8 @@ def get_chi2_of_edge(edge: Union[EdgeProjectPSI2UV, EdgeSE3Expmap, EdgeSE3, Edge
 
 
 def sum_optimizer_edges_chi2(optimizer: g2o.SparseOptimizer, verbose: bool = True,
-                             edge_type_filter: Optional[Set[Union[EdgeProjectPSI2UV, EdgeSE3Expmap, EdgeSE3Gravity]]] =
+                             edge_type_filter: Optional[Set[Union[Type[Union[EdgeProjectPSI2UV, EdgeSE3Expmap,
+                                                                       EdgeSE3Gravity]]]]] =
                              None, log_normalization: bool = False) -> float:
     """Iterates through edges in the g2o sparse optimizer object and sums the chi2 values for all the edges.
 
@@ -245,7 +246,7 @@ def ground_truth_metric(optimized_tag_verts: np.ndarray, ground_truth_tags: np.n
     return avg
 
 
-def make_processed_map_JSON(opt_result: OG2oOptimizer, calculate_intersections: bool = False) \
+def make_processed_map_json(opt_result: OG2oOptimizer, calculate_intersections: bool = False) \
         -> str:
     """Serializes the result of an optimization into a JSON that is of an acceptable format for uploading to the
     database.

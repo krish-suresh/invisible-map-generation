@@ -160,9 +160,8 @@ def invert_array_of_se3_vectors(array_of_se3_vectors: np.ndarray) -> np.ndarray:
     return array_of_se3_vectors
 
 
-def apply_z_translation_to_lhs_of_se3_vectors(array_of_se3_vectors, offset: float = 1) -> np.ndarray:
-    """Applies a translation to the transforms contained in the input. Transform is applied on the LHS, and consists of
-    an identity rotation component and a translation component with 'offset' in the z-axis translation component.
+def apply_z_trans_to_rhs_of_se3_vectors(array_of_se3_vectors, offset: float) -> np.ndarray:
+    """Applies a translation to the transforms contained in the input. Transform is applied on the right-hand side.
 
     Notes:
         Modifies the input argument.
@@ -170,15 +169,15 @@ def apply_z_translation_to_lhs_of_se3_vectors(array_of_se3_vectors, offset: floa
     Args:
         array_of_se3_vectors: Expected to be a nx7+ array of n transforms. The first 7 elements of each row are treated
          as a vectorized SE3 transform, which is to be transformed. Any additional elements beyond the first 7 in each
-         row are not modified.
-        offset: z-axis translation component to use.
+         row are not considered or modified.
+        offset: z-axis translation to apply.
 
     Returns:
         The modified input array.
     """
     for i in range(array_of_se3_vectors.shape[0]):
-        array_of_se3_vectors[i, :7] = (SE3Quat([0, 0, offset, 0, 0, 0, 1]) *
-                                       SE3Quat(array_of_se3_vectors[i, :7])).to_vector()
+        array_of_se3_vectors[i, :7] = (SE3Quat(array_of_se3_vectors[i, :7]) *
+                                       SE3Quat([0, 0, offset, 0, 0, 0, 1])).to_vector()
     return array_of_se3_vectors
 
 
@@ -261,11 +260,88 @@ def norm_array_cols(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
-FLIP_Y_AND_Z_AXES = np.array(
+def transform_gt_to_have_common_reference(anchor_pose: SE3Quat, anchor_idx: int, ground_truth_tags: List[SE3Quat]):
+    # noinspection GrazieInspection
+    """
+        Args:
+            anchor_pose: Pose of the anchor tag from the optimized data set. The anchor tag pose is the pose about which
+             the ground truth data is aligned (i.e., the transform between the optimized anchor tag and the
+             corresponding tag from the ground truth data set will always be the identity).
+            anchor_idx: Selects the ground truth tag pose from `ground_truth_tags` that corresponds to the same tag as
+             `anchor_pose`.
+            ground_truth_tags: The ground truth data expressed in an arbitrary reference frame. Order matters insofar as
+             `anchor_idx` selects the intended pose in this list.
+
+        Returns:
+            A new set of transforms given the ground truth tag data set in an arbitrary reference frame and the
+            corresponding tag poses in the global frame that expresses the ground truth data in global frame.
+
+        Notes:
+            # Notation
+
+            Define a matrix transform
+
+            a
+             T
+              b
+
+            to give the transform to b in the reference frame of a (i.e., the above can be read as a matrix T with left-
+            superscript denoting the reference frame that the transform to b is in, with b being a subscript). The
+            following denotes an inversion of the above matrix:
+
+            a -1
+             T
+              b
+
+            Make the following definitions:
+            - G   -> the global reference frame of the optimized tag poses
+            - G'  -> the global reference frame of the ground truth data set
+            - t*i -> the ith ground truth tag frame
+            - ta  -> the anchor tag (selected from the collected data set)
+            - t*a -> the ground truth tag corresponding to the anchor tag
+
+            # Finding the Ground Truth Data in the Global Reference Frame
+
+            To find the transform of each ith ground truth tag in the global reference frame, we need to compute:
+
+            G       G      ta      G'
+             T    =  T   *   T   *   T
+              t*i     ta      G'       t*i
+
+            We do so by specifying that the transform from ta to G' is the identity. This requires the ground truth data
+            to be transformed such that t*a is at the origin of G'. Therefore, we define a new set of ground truth tag
+            transforms, where the ith transform is:
+
+            G'         G' -1    G'
+              T'    :=   T    *   T
+                t*i       t*a      t*i
+
+            Therefore:
+
+            G       G      G'
+             T    =  T   *   T'
+              t*i     ta      t*i
+
+            This is what is computed in the following code.
+        """
+    to_world = anchor_pose * (ground_truth_tags[anchor_idx]).inverse()
+    return np.asarray([(to_world * gt_tag).to_vector() for gt_tag in ground_truth_tags])
+
+
+NEGATE_Y_AND_Z_AXES = np.array(
     [
         [1, 0, 0, 0],
         [0, -1, 0, 0],
         [0, 0, -1, 0],
+        [0, 0, 0, 1]
+    ]
+)
+
+NEGATE_X = np.array(
+    [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
         [0, 0, 0, 1]
     ]
 )
