@@ -366,7 +366,8 @@ if __name__ == "__main__":
                 opt_results = graph_manager.process_map(
                     map_info=map_info, visualize=args.v, upload=args.F, fixed_vertices=tuple(fixed_tags),
                     obs_chi2_filter=args.filter, compute_inf_params=compute_inf_params,
-                    gt_data=GTDataSet.gt_data_set_from_dict_of_arrays(gt_data) if gt_data is not None else None)
+                    gt_data=GTDataSet.gt_data_set_from_dict_of_arrays(gt_data) if gt_data is not None
+                    else None)
                 if not args.g:
                     continue
 

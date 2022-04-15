@@ -337,18 +337,19 @@ NEGATE_Y_AND_Z_AXES = np.array(
     ]
 )
 
-NEGATE_X = np.array(
+NEGATE_Z_SE3QUAT = np.array(
     [
         [1, 0, 0, 0],
-        [0, 1, 0, 0],
+        [0, -1, 0, 0],
         [0, 0, 1, 0],
         [0, 0, 0, 1]
     ]
 )
 
+
 AR_TO_OPENCV = np.array(
     [
-        [0,  1,  0, 0],
+        [0, -1,  0, 0],
         [1,  0,  0, 0],
         [0,  0, -1, 0],
         [0,  0,  0, 1]

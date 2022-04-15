@@ -18,24 +18,43 @@ Z_HAT_1X3 = np.array(((0, 0, 1),))
 BASES_COLOR_CODES = ("r", "g", "b")
 
 
-def draw_frames(offsets: np.ndarray, frames: np.ndarray, plt_axes: plt.Axes,
-                colors: Tuple[str, str, str] = BASES_COLOR_CODES) -> None:
+def draw_frames(poses: np.ndarray, plt_axes: plt.Axes, colors: Tuple[str, str, str] = BASES_COLOR_CODES) -> None:
     """Draw an arbitrary number (N) of reference frames at given translation offsets.
 
     Args:
-        offsets: Translation offsets of the frames. Expected to be a 3xN matrix where the rows from top to bottom
-         encode the translation offset in the first, second, and third dimensions, respectively.
-        frames: Nx3x3 array of rotation matrices or Nx4 array of quaternions vectors.
+        poses: Pose(s) whose basis vectors are plotted. Can be provided in one of a few formats: (1) A Nx7 vector of N
+         SE3Quat vectors, (2) a length-7 1-dimensional SE3Quat vector, (3) a Nx4x4 array of N homogenous transform
+         matrices, or (4) a 4x4 2-dimensional transform matrix.
         plt_axes: Matplotlib axes to plot on
         colors: Tuple of color codes to use for the first, second, and third dimensions' basis vector arrows,
          respectively.
+
+    Raises:
+        ValueError: if the input array shapes are not as expected
     """
-    if len(frames.shape) == 2:
-        rot_mats = np.zeros([frames.shape[0], 3, 3])
-        for frame_idx in range(frames.shape[0]):
-            rot_mats[frame_idx, :, :] = transform_vector_to_matrix(frames[frame_idx, :])[:3, :3]
-    else:
-        rot_mats = np.array(frames)
+    rot_mats: Optional[np.ndarray] = None
+    offsets: Optional[np.ndarray] = None
+
+    if len(poses.shape) == 1 and poses.shape[0] == 7:
+        pose_mat = transform_vector_to_matrix(poses)
+        rot_mats = np.expand_dims(pose_mat[:3, :3], 1)
+        offsets = pose_mat[:3, 3].transpose()
+    elif len(poses.shape) == 2:
+        if poses.shape[1] == 7:
+            pose_mats = np.zeros([poses.shape[0], 4, 4])
+            for frame_idx in range(poses.shape[0]):
+                pose_mats[frame_idx, :, :] = transform_vector_to_matrix(poses[frame_idx, :])
+            rot_mats = pose_mats[:, :3, :3]
+            offsets = pose_mats[:, :3, 3].transpose()
+        elif poses.shape == (4, 4):
+            rot_mats = np.expand_dims(poses[:3, :3], 0)
+            offsets = np.expand_dims(poses[:3, 3].transpose(), 1)
+    elif len(poses.shape) == 3 and poses.shape[1:] == (4, 4):
+        rot_mats = poses[:, :3, :3]
+        offsets = poses[:, :3, 3].transpose()
+
+    if rot_mats is None or offsets is None:
+        raise ValueError(f"poses argument was of an invalid shape: {poses.shape}")
 
     for b in range(3):
         basis_vecs = (rot_mats[:, :, b]).transpose()
@@ -90,15 +109,18 @@ def plot_optimization_result(
     ax.set_zlabel("Z")
     ax.view_init(120, -90)
 
-    plt.plot(orig_odometry[:, 0], orig_odometry[:, 1], orig_odometry[:, 2], "-", c="g", label="Prior Odom Vertices")
-    plt.plot(opt_odometry[:, 0], opt_odometry[:, 1], opt_odometry[:, 2], "-", c="b", label="Odom Vertices")
+    # plt.plot(orig_odometry[:, 0], orig_odometry[:, 1], orig_odometry[:, 2], "-", c="g", label="Prior Odom Vertices")
+    # plt.plot(opt_odometry[:, 0], opt_odometry[:, 1], opt_odometry[:, 2], "-", c="b", label="Odom Vertices")
+    draw_frames(orig_odometry[:, :7], plt_axes=ax)
     plt.plot(opt_tag_corners[:, 0], opt_tag_corners[:, 1], opt_tag_corners[:, 2], ".", c="m",
              label="Tag Corners")
 
     # Plot optimized tag vertices, their reference frames, and their labels
+    draw_frames(opt_tag_verts[:, :7], plt_axes=ax)
     plt.plot(opt_tag_verts[:, 0], opt_tag_verts[:, 1], opt_tag_verts[:, 2], "o", c="#ff8000",
              label="Tag Vertices Optimized")
-    draw_frames(opt_tag_verts[:, :3].transpose(), opt_tag_verts[:, :-1], plt_axes=ax)
+
+    draw_frames(orig_tag_verts[:, :-1], plt_axes=ax)
     for vert in opt_tag_verts:
         ax.text(vert[0], vert[1], vert[2], str(int(vert[-1])), color="#663300")
 
@@ -123,7 +145,7 @@ def plot_optimization_result(
 
         plt.plot(world_frame_ground_truth[:, 0], world_frame_ground_truth[:, 1], world_frame_ground_truth[:, 2],
                  'o', c='k', label=f'Ground Truth Tags')
-        draw_frames(world_frame_ground_truth[:, 0:3].transpose(), world_frame_ground_truth, plt_axes=ax)
+        draw_frames(world_frame_ground_truth, plt_axes=ax)
         for i, tag in enumerate(world_frame_ground_truth):
             ax.text(tag[0], tag[1], tag[2], str(i), c='k')
 

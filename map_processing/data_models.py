@@ -13,7 +13,7 @@ Notes:
 
 import itertools
 from typing import List, Dict, Union, Optional, Tuple
-from map_processing.transform_utils import transform_matrix_to_vector, transform_vector_to_matrix
+from map_processing.transform_utils import transform_matrix_to_vector
 from g2o import SE3Quat
 
 import numpy as np
@@ -352,7 +352,7 @@ class UGDataSet(BaseModel):
         # measurements. Additionally, note that the matrix here is recorded in row-major format.
         return np.zeros((0, 4, 4)) if len(self.tag_data) == 0 else \
             np.matmul(NEGATE_Y_AND_Z_AXES, np.vstack([[x.tag_pose for x in tags_from_frame] for tags_from_frame in
-                                                      self.tag_data]).reshape([-1, 4, 4]))
+                                                      self.tag_data]).reshape([-1, 4, 4], order="C"))
 
     @property
     def timestamps(self) -> np.ndarray:
@@ -473,33 +473,33 @@ class GTDataSet(BaseModel):
     
     @classmethod
     def gt_data_set_from_dict_of_arrays(cls, dct: Dict[int, np.ndarray]) -> "GTDataSet":
-        # Construct data for the GTDataSet initialization: arbitrarily select a tag to use as the origin of the
-        # coordinate system in which the rest of the tags are represented.
+        """Generate a GTDataSet from a dict of tag data.
+
+        Notes:
+            Arbitrarily selects one of the poses to be the origin of the data set (i.e., one of the pose transforms in
+            the resulting data set will be the identity).
+
+        Args:
+            dct: Dictionary mapping tag IDs to their poses in some arbitrary reference frame. The poses are expected to
+             either 4x4 matrices or length-7 SE3 vectors.
+        """
         if len(dct) == 0:
             return GTDataSet()
 
-        ground_truth_tags = []
-        origin_key: int = 0
-        for key in dct.keys():
-            origin_key = key
-            break
-
         # create new dict in case se3 vectors need to be converted to 4x4 transform matrices
-        new_dict = {}
+        new_dict: Dict[int, np.ndarray] = {}
         for item in dct.items():
             if item[1].shape == (4, 4):
-                new_dict[item[0]] = item[1]
+                new_dict[item[0]] = SE3Quat(transform_matrix_to_vector(item[1])).to_vector()
             else:
-                new_dict[item[0]] = transform_vector_to_matrix(item[1])
+                new_dict[item[0]] = item[1]
 
-        origin_inverted = np.linalg.inv(new_dict[origin_key])
-
+        ground_truth_tags = []
         for item in new_dict.items():
-            # noinspection PyUnboundLocalVariable
             ground_truth_tags.append(
                 GTTagPose(
                     tag_id=item[0],
-                    pose=list(transform_matrix_to_vector(np.matmul(origin_inverted,  item[1])))
+                    pose=item[1].tolist()
                 )
             )
         return GTDataSet(poses=ground_truth_tags)

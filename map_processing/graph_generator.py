@@ -17,7 +17,7 @@ from copy import deepcopy
 
 from map_processing.cache_manager import CacheManagerSingleton, MapInfo
 from map_processing.data_models import UGDataSet, UGTagDatum, UGPoseDatum, GTDataSet
-from map_processing.transform_utils import norm_array_cols, NEGATE_Y_AND_Z_AXES, AR_TO_OPENCV
+from map_processing.transform_utils import norm_array_cols, AR_TO_OPENCV, NEGATE_Y_AND_Z_AXES,  NEGATE_Z_SE3QUAT
 from map_processing.graph_opt_plot_utils import draw_frames
 
 matplotlib.rcParams['figure.dpi'] = 500
@@ -235,7 +235,6 @@ class GraphGenerator:
                     tag_data.append(list())
                     tag_data_idx += 1
                 looped = True
-
                 tag_data[tag_data_idx].append(
                     UGTagDatum(
                         tag_corners_pixel_coordinates=list(
@@ -245,10 +244,7 @@ class GraphGenerator:
                         camera_intrinsics=list(np.array(GraphGenerator.CAMERA_INTRINSICS_VEC)),
                         # Intentionally skipping position and orientation variance
                         timestamp=self._odometry_t_vec[pose_idx],
-                        # Note for the tag pose: the tag coordinate system in optimization expects the y and z axes to
-                        # be the negative of what we used here
-                        tag_pose=list(np.matmul(NEGATE_Y_AND_Z_AXES,
-                                                self._observation_poses[pose_idx][tag_id]).flatten(order="C")),
+                        tag_pose=list(self._observation_poses[pose_idx][tag_id].flatten(order="C")),
                         # Intentionally skipping joint covariance
                     )
                 )
@@ -305,25 +301,24 @@ class GraphGenerator:
         ax.axes.set_zlim3d(bottom=-plus_minus_lim, top=plus_minus_lim)
 
         plt.plot(path_samples[0, :], path_samples[1, :], path_samples[2, :])
-        draw_frames((self._odometry_poses[:, :3, 3]).transpose(), self._odometry_poses[:, :3, :3], ax)
-        draw_frames((self._orig_tag_poses_arr[:, :3, 3]).transpose(),
-                    self._orig_tag_poses_arr[:, :3, :3], ax, colors=("m", "m", "m"))
+        draw_frames(self._odometry_poses, plt_axes=ax)
+        draw_frames(self._orig_tag_poses_arr, plt_axes=ax, colors=("m", "m", "m"))
 
         # Get observation vectors in the global frame and plot them
         for i, dct in enumerate(self._observation_poses):
             pose = self._obs_from_poses[i, :, :]
             line_start = pose[:3, 3]
             for obs in dct.values():
-                # If transforms are computed correctly, then obs_in_global should be equivalent to the original tag pose
-                # definition
-                obs_in_global = np.matmul(pose, obs)
+                # Apply NEGATE_Y_AND_Z_AXES multiplication here because that is what happens when poses are ingested
+                # in the `Graph.as_graph` method.
+                obs_in_global = np.matmul(pose, np.matmul(NEGATE_Y_AND_Z_AXES, obs))
+                draw_frames(obs_in_global, plt_axes=ax)
                 line_end = obs_in_global[:3, 3]
                 ax.plot(
                     xs=[line_start[0], line_end[0]],
                     ys=[line_start[1], line_end[1]],
                     zs=[line_start[2], line_end[2]],
-                    color="c"
-                )
+                    color="c")
         plt.show()
 
     # noinspection Pydantic
@@ -462,8 +457,18 @@ class GraphGenerator:
         Returns:
             True if all points are visible according to the camera intrinsics.
         """
-        # Flip the y and z because the math for the camera intrinsics assumes that +z is increasing depth from the
-        # camera (and the AR kit has +z facing out of the screen).
+        # -- Compute the pixel_vals first --
+
+        pixel_vals_tmp = np.matmul(GraphGenerator.CAMERA_INTRINSICS, np.matmul(tag_in_phone, self._tag_corners_in_tag)[:3, :])
+        for col_idx in range(pixel_vals_tmp.shape[1]):
+            if pixel_vals_tmp[2, col_idx] == 0:
+                # Avoid divide-by-zero by setting pixels to -1 (corresponds to non-visible observation)
+                pixel_vals_tmp[:, col_idx] = -1
+            pixel_vals_tmp[:, col_idx] = pixel_vals_tmp[:, col_idx] / pixel_vals_tmp[2, col_idx]
+        pixel_vals[:, :] = pixel_vals_tmp[:2, :]
+
+        # -- Recompute the pose --
+
         flipped_tag_in_phone = np.matmul(NEGATE_Y_AND_Z_AXES, tag_in_phone)
         tag_corners_in_flipped_phone = np.matmul(flipped_tag_in_phone, self._tag_corners_in_tag)
 
@@ -477,40 +482,27 @@ class GraphGenerator:
                 pixel_coords_flipped[:, col_idx] = -1
             pixel_coords_flipped[:, col_idx] = pixel_coords_flipped[:, col_idx] / pixel_coords_flipped[2, col_idx]
 
-        pixel_vals[:, :] = pixel_coords_flipped[:2, :]
-
         # Check if all pixel coordinates are within the sensor's bounds
         if np.any(pixel_coords_flipped[0:2, :] < 0) or \
                 np.any(pixel_coords_flipped[0, :] > GraphGenerator._double_camera_intrinsics[0, 2]) or \
                 np.any(pixel_coords_flipped[1, :] > GraphGenerator._double_camera_intrinsics[1, 2]):
             return False
 
-        # Now, we need the tag_in_phone transform to use the OpenCV reference frame convention
-        opencv_tag_in_phone = np.matmul(np.linalg.inv(AR_TO_OPENCV), tag_in_phone)
-        tag_corners_in_opencv_phone = np.matmul(opencv_tag_in_phone, self._tag_corners_in_tag)
+        t_vec = np.expand_dims(tag_in_phone[:3, 3], 1)
+        r_vec = cv2.Rodrigues(tag_in_phone[:3, :3])[0]
+        success, r_vec, t_vec = cv2.solvePnP(
+            objectPoints=self._tag_corners_for_pnp, imagePoints=np.transpose(pixel_coords_flipped[:2, :]),
+            cameraMatrix=self.CAMERA_INTRINSICS, rvec=r_vec, tvec=t_vec,
+            distCoeffs=None, flags=cv2.SOLVEPNP_IPPE_SQUARE, useExtrinsicGuess=True)
+        if not success:
+            return False  # TODO: figure out why this doesn't work all the times that it should...
 
-        # 3xN array of N points' pixel coordinates (accurate only after subsequent normalization)
-        pixel_coords_opencv = np.matmul(GraphGenerator.CAMERA_INTRINSICS, tag_corners_in_opencv_phone[:3, :])
-
-        # Normalize values so that first and second rows contain the actual pixel values
-        for col_idx in range(pixel_coords_opencv.shape[1]):
-            if pixel_coords_opencv[2, col_idx] == 0:
-                # Avoid divide-by-zero by setting pixels to -1 (corresponds to non-visible observation)
-                pixel_coords_opencv[:, col_idx] = -1
-            pixel_coords_opencv[:, col_idx] = pixel_coords_opencv[:, col_idx] / pixel_coords_opencv[2, col_idx]
-
-        opencv_pixel_vals = pixel_coords_opencv[:2, :] + np.random.randn(2, 4) * self._obs_noise_var
-        _, r_vec, t_vec = cv2.solvePnP(self._tag_corners_for_pnp, np.transpose(opencv_pixel_vals),
-                                       self.CAMERA_INTRINSICS, None, flags=cv2.SOLVEPNP_IPPE_SQUARE)
-        if np.isnan(np.sum(r_vec)):
-            return False  # TODO: figure out why NaN numbers show up sometimes
         rot_mat, _ = cv2.Rodrigues(r_vec)
 
         new_transform = np.zeros((4, 4))
-        new_transform[:3, :3] = rot_mat.transpose()
+        new_transform[:3, :3] = rot_mat
         new_transform[:3, 3] = t_vec.transpose()
         new_transform[3, 3] = 1
-        new_transform[:, :] = np.matmul(AR_TO_OPENCV, new_transform)  # Undo the conversion to the OpenCV frame
         tag_in_phone[:, :] = new_transform
         return True
 
