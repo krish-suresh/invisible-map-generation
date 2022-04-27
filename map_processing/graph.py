@@ -180,7 +180,7 @@ class Graph:
             adj_chi2 += graph_opt_utils.get_chi2_of_edge(g2o_edge, g2o_edge.vertices()[0])
         return adj_chi2, num_tags_visible
 
-    def optimize_graph(self, verbose: bool = True) -> float:
+    def optimize_graph(self, verbose: bool = False) -> float:
         """Optimize the graph using g2o (optimization result is a SparseOptimizer object, which is stored in the
         optimized_graph attribute). The g2o_status attribute is set to the g2o success output.
 

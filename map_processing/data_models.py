@@ -76,10 +76,10 @@ def _validator_for_numpy_array_deserialization(v: Union[str, np.ndarray]) -> \
 
 
 class Weights(BaseModel):
-    gravity: np.ndarray = Field(default_factory=lambda: np.ones(3))
-    odometry: np.ndarray = Field(default_factory=lambda: np.ones(6))
+    gravity: np.ndarray = Field(default_factory=lambda: np.ones(3)) # all 100s fixed
+    odometry: np.ndarray = Field(default_factory=lambda: np.ones(6)) # fixed rotaional noise and change translational noise
     tag: np.ndarray = Field(default_factory=lambda: np.ones(6))
-    tag_sba: np.ndarray = Field(default_factory=lambda: np.ones(2))
+    tag_sba: np.ndarray = Field(default_factory=lambda: np.ones(2)) # ratio for obs noise
     odom_tag_ratio: confloat(ge=0.00001) = 1.0
 
     class Config:

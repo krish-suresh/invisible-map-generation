@@ -500,6 +500,7 @@ class GraphGenerator:
             pixel_coords_opencv[:, col_idx] = pixel_coords_opencv[:, col_idx] / pixel_coords_opencv[2, col_idx]
 
         opencv_pixel_vals = pixel_coords_opencv[:2, :] + np.random.randn(2, 4) * self._obs_noise_var
+        print("TEST")
         _, r_vec, t_vec = cv2.solvePnP(self._tag_corners_for_pnp, np.transpose(opencv_pixel_vals),
                                        self.CAMERA_INTRINSICS, None, flags=cv2.SOLVEPNP_IPPE_SQUARE)
         if np.isnan(np.sum(r_vec)):
@@ -511,7 +512,7 @@ class GraphGenerator:
         new_transform[:3, 3] = t_vec.transpose()
         new_transform[3, 3] = 1
         new_transform[:, :] = np.matmul(AR_TO_OPENCV, new_transform)  # Undo the conversion to the OpenCV frame
-        tag_in_phone[:, :] = new_transform
+        # tag_in_phone[:, :] = new_transform
         return True
 
     # -- Static methods --

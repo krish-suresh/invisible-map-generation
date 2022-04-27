@@ -121,8 +121,8 @@ class GraphManager:
         Returns:
             The output of the `GraphManager.optimize_map` method (see more detail there).
         """
-        graph_plot_title = None
-        chi2_plot_title = None
+        graph_plot_title = ""
+        chi2_plot_title = ""
         if visualize:
             graph_plot_title = "Optimization results for map: {}".format(map_info.map_name)
             chi2_plot_title = "Odom. node incident edges chi2 values for map: {}".format(map_info.map_name)

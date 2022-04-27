@@ -36,14 +36,14 @@ import matplotlib.pyplot as plt
 import datetime
 import json
 import multiprocessing as mp
-
-from map_processing.data_models import OComputeInfParams, OConfig, GTDataSet
+from matplotlib import cm
+from map_processing.data_models import OComputeInfParams, OConfig, GTDataSet, Weights
 
 NOW_FORMAT = "%y-%m-%d-%H-%M-%S"
 
 NUM_SWEEP_PROCESSES: int = 1
 IS_SBA = True
-ORDERED_SWEEP_CONFIG_KEYS = [
+ORDERED_SWEEP_CONFIG_KEYS = [ 
     "odom_tag_ratio_arr",
     "lin_vel_var_arr",
     "ang_vel_var_arr",
@@ -58,10 +58,10 @@ accordingly.
 
 # TODO: revisit the use of np.exp(.) around the lin_ and ang_vel_var arrays
 SWEEP_CONFIG: Dict[str, Tuple[Callable, Iterable[Any]]] = {
-    "odom_tag_ratio_arr": (np.geomspace, [0.01, 10, 2]),
+    "odom_tag_ratio_arr": (np.geomspace, [0.01, 10, 20]),
     "lin_vel_var_arr": (np.linspace, [0.01, 3, 2]),
     "ang_vel_var_arr": (np.linspace, [0.01, 3, 2]),
-    "grav_mag_arr": (np.linspace, [0.01, 3, 2]),
+    "grav_mag_arr": (np.linspace, [0.01, 3, 2]), # fix at high value
 }
 
 
@@ -194,6 +194,8 @@ def make_parser():
         help="(scale_by_edge_amount) Apply a multiplicative coefficient to the odom-to-tag ratio that is found by "
              "computing the ratio of the number of tag edges to odometry edges."
     )
+    p.add_argument("-test_odom_ratio")
+    p.add_argument("-test_obs_ratio")
     return p
 
 
@@ -218,7 +220,6 @@ def sweep_params(mi: MapInfo, ground_truth_data: dict, scale_by_edge_amount: boo
     # Set default value of [1, ] for any un-specified sweep parameter
     for key in set(ORDERED_SWEEP_CONFIG_KEYS).difference(sweep_arrs.keys()):
         sweep_arrs[key] = np.array([1, ])
-
     products = []
     oconfigs = []
     for product, oconfig in OConfig.oconfig_sweep_generator(base_oconfig=base_oconfig, product_args=product_args):
@@ -233,14 +234,28 @@ def sweep_params(mi: MapInfo, ground_truth_data: dict, scale_by_edge_amount: boo
     for key in ORDERED_SWEEP_CONFIG_KEYS:
         sweep_param_to_result_idx_mappings[key] = {sweep_arg: sweep_idx for sweep_idx, sweep_arg in
                                                    enumerate(sweep_arrs[key])}
-
     sweep_args = []
     for i, oconfig in enumerate(oconfigs):
         sweep_args.append((graph_to_opt, oconfig, ground_truth_data, (i, len(oconfigs))))
 
     # Run the parameter sweep
     if NUM_SWEEP_PROCESSES == 1:  # Skip multiprocessing if only one process is specified
-        results_tuples = [sweep_target(sweep_arg) for sweep_arg in sweep_args]
+        results_tuples = []
+        with open(f"test_data/{mi.map_name}.csv", "w") as file:
+            file.write("gtd,odo,lin,accel,grav\n")
+            for sweep_arg, product in zip(sweep_args, products):
+                res = sweep_target(sweep_arg)
+                file.write(str(res[0]))
+                file.write(",")
+                file.write(str(product[0]))
+                file.write(",")
+                file.write(str(product[1]))
+                file.write(",")
+                file.write(str(product[2]))
+                file.write(",")
+                file.write(str(product[3]))
+                file.write("\n")
+                results_tuples.append(res)
     else:
         with mp.Pool(processes=NUM_SWEEP_PROCESSES) as pool:
             results_tuples = pool.map(sweep_target, sweep_args)
@@ -260,19 +275,19 @@ def sweep_params(mi: MapInfo, ground_truth_data: dict, scale_by_edge_amount: boo
     if np.any(results_arr < 0):
         raise Exception("Array of results was not completely populated")
 
-    print(results_arr)
-
+    # print(results_arr)
+    # print(sweep_arrs)
     # Find what the minimum ground truth value is and what produced it
     min_ground_truth = np.min(results_arr)
     # noinspection PyTypeChecker
+    # for min_ground_truth in results_arr.flatten():
     where_min_pre: Tuple[np.ndarray, np.ndarray, np.ndarray] = np.where(results_arr == min_ground_truth)
     where_min = tuple([arr[0] for arr in where_min_pre])  # Select first result if there are multiple
     args_producing_min = {}
     for i, key in enumerate(ORDERED_SWEEP_CONFIG_KEYS):
         args_producing_min[key] = sweep_arrs[key][where_min[i]]
-
-    print(f"\nMinimum ground truth value: {min_ground_truth:.3f} with args:\n" + json.dumps(args_producing_min, indent=2))
-
+    # print(f"{min_ground_truth},{args_producing_min['odom_tag_ratio_arr']},{args_producing_min['lin_vel_var_arr']},{args_producing_min['ang_vel_var_arr']},{args_producing_min['grav_mag_arr']}")
+    print(min_ground_truth)
     # Plot a heatmap of the ground truth metric against a 2D projection of the search space
     xx, yy = np.meshgrid(sweep_arrs[PLOT_XY_AXES[0]], sweep_arrs[PLOT_XY_AXES[1]])
     zz = results_arr[where_min[0], :, :, where_min[3]]  # Ground truth metric
@@ -290,9 +305,47 @@ def sweep_params(mi: MapInfo, ground_truth_data: dict, scale_by_edge_amount: boo
         os.mkdir(results_target_folder)
     results_cache_file_name_no_ext = f"{datetime.datetime.now().strftime(NOW_FORMAT)}_{map_info.map_name}_sweep"
     plt.savefig(os.path.join(results_target_folder, results_cache_file_name_no_ext + ".png"), dpi=300)
+    # plt.show()
+
+def sweep_params_around(mi: MapInfo, ground_truth_data: dict, odom_ratio, obs_ratio):
+    graph_to_opt = Graph.as_graph(mi.map_dct)
+    odom_exp = np.floor(np.log10(np.abs(odom_ratio)))
+    obs_exp = np.floor(np.log10(np.abs(obs_ratio)))
+    rot_noise_baseline = 0.001
+    product_args=[10,1,1,50]
+    len_3_unit_vec = np.ones(3) * np.sqrt(1 / 3)
+    base_oconfig=OConfig(is_sba=IS_SBA, scale_by_edge_amount=False)
+    data = []
+    for obs_noise_ratio in np.linspace(1, 100, 20): # ratio between odo_noise_ratio and obs_noise_ratio
+        for odo_noise_ratio in np.linspace(10, 1000, 20):
+            oconfig = OConfig(
+                is_sba=True,
+                obs_chi2_filter=base_oconfig.obs_chi2_filter,
+                compute_inf_params=OComputeInfParams(
+                    lin_vel_var=product_args[0] * np.ones(3),
+                    ang_vel_var=product_args[1],
+                ),
+                scale_by_edge_amount=base_oconfig.scale_by_edge_amount,
+                weights=Weights(
+                    gravity=len_3_unit_vec * product_args[2],
+                    odom_tag_ratio=product_args[3],
+                ),
+                graph_plot_title=base_oconfig.graph_plot_title,
+                chi2_plot_title=base_oconfig.chi2_plot_title,
+            )
+            oconfig.scale_by_edge_amount = False
+            translational_odom_noise = rot_noise_baseline*odo_noise_ratio
+            obs_noise = translational_odom_noise*obs_noise_ratio
+            oconfig.weights.odometry = np.array([translational_odom_noise, translational_odom_noise, translational_odom_noise, rot_noise_baseline,rot_noise_baseline,rot_noise_baseline])
+            oconfig.weights.tag_sba = np.array([obs_noise, obs_noise])
+            output_gt = sweep_target((graph_to_opt, oconfig, ground_truth_data, (0,0)))[0]
+            # print(output_gt)
+            data.append([obs_noise_ratio,odo_noise_ratio,output_gt])
+    fig = plt.figure()
+    ax = plt.axes(projection='3d')
+    data = np.array(data)
+    ax.plot_trisurf(data[:, 0],data[:, 1],data[:, 2], linewidth=0.2, antialiased=True)
     plt.show()
-
-
 def sweep_target(sweep_args_tuple: Tuple[Graph, OConfig, Dict[int, np.ndarray], Tuple[int, int]]) -> Tuple[float, int]:
     """
     Args:
@@ -302,7 +355,6 @@ def sweep_target(sweep_args_tuple: Tuple[Graph, OConfig, Dict[int, np.ndarray], 
     Returns:
         Return value from GraphManager.optimize_graph
     """
-    print("\n")
     results = GraphManager.optimize_graph(graph=deepcopy(sweep_args_tuple[0]), visualize=False,
                                           optimization_config=sweep_args_tuple[1])
     gt_result = GraphManager.ground_truth_metric_with_tag_id_intersection(
@@ -355,7 +407,8 @@ if __name__ == "__main__":
     for map_info in matching_maps:
         if args.s:
             gt_data = cms.find_ground_truth_data_from_map_info(map_info)
-            sweep_params(mi=map_info, ground_truth_data=gt_data, scale_by_edge_amount=args.sbea)
+            # sweep_params(mi=map_info, ground_truth_data=gt_data, scale_by_edge_amount=args.sbea)
+            sweep_params_around(mi=map_info, ground_truth_data=gt_data, odom_ratio=float(args.test_odom_ratio), obs_ratio=float(args.test_obs_ratio))
         else:
             graph_manager = GraphManager(GraphManager.WeightSpecifier(args.w), cms, pso=args.pso,
                                          scale_by_edge_amount=args.sbea)
